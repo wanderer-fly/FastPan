@@ -1,0 +1,12 @@
+version: '3.8'
+
+services:
+  fastpan:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./storage:/app/storage
+    environment:
+      - BASE_URL=http://localhost:8000
+    restart: unless-stopped

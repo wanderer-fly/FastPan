@@ -28,7 +28,15 @@ TOKENS = {}
 SHARES = {}
 
 SECRET_KEY = os.getenv("SECRET_KEY", "fastpan-secret")
-SHARE_FILE = STORAGE / "shares.json"
+PROJECT_ROOT = Path(__file__).resolve().parent
+SHARE_FILE = PROJECT_ROOT / "shares.json"
+# 迁移：如果旧位置有 shares.json 且新位置没有，则移动过去
+_old_share = STORAGE / "shares.json"
+if _old_share.exists() and not SHARE_FILE.exists():
+    try:
+        os.replace(str(_old_share), str(SHARE_FILE))
+    except Exception:
+        pass
 
 app = FastAPI()
 

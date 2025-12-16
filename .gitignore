@@ -4,3 +4,4 @@ storage/
 .env
 .DS_Store
 *.pyc
+shares.json

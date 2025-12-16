@@ -200,6 +200,7 @@ tailwind.config = { darkMode:'class' }
 <a href="javascript:share('{{ i.full }}')"><i class="bi bi-link-45deg"></i></a>
 {% endif %}
 {% if login %}
+<a href="#" data-path="{{ i.full }}" onclick="openRename(this.dataset.path);return false;"><i class="bi bi-pencil"></i></a>
 <a href="#" data-path="{{ i.full }}" onclick="openDelete(this.dataset.path);return false;"><i class="bi bi-trash"></i></a>
 {% endif %}
 </div>
@@ -276,6 +277,20 @@ tailwind.config = { darkMode:'class' }
     <div class="flex gap-2">
       <button onclick="closeDelete()" class="flex-1 py-2 rounded border">取消</button>
       <button onclick="doDelete()" class="flex-1 py-2 rounded bg-red-500 text-white">删除</button>
+    </div>
+  </div>
+</div>
+
+<!-- 重命名 -->
+<div id="renameModal" class="fixed inset-0 hidden bg-black/30 backdrop-blur flex items-center justify-center">
+  <div class="bg-white dark:bg-slate-800 p-6 rounded-xl w-80 relative">
+    <button type="button" onclick="closeRename()" class="absolute top-2 right-2 text-slate-400"><i class="bi bi-x-lg"></i></button>
+    <h3 class="text-lg font-bold mb-2">重命名</h3>
+    <p class="text-sm text-slate-500 mb-3">当前：<span id="renameOld" class="font-mono"></span></p>
+    <input id="renameName" placeholder="新文件名" class="w-full p-2 rounded bg-slate-100 dark:bg-slate-700 mb-3">
+    <div class="flex gap-2">
+      <button onclick="closeRename()" class="flex-1 py-2 rounded border">取消</button>
+      <button onclick="doRename()" class="flex-1 py-2 rounded bg-blue-500 text-white">确认</button>
     </div>
   </div>
 </div>
@@ -401,6 +416,44 @@ function doDelete(){
         showToast(`删除失败：${d.error||'未知错误'}`,'error');
       }
     }).catch(()=>showToast('删除失败：网络错误','error'));
+}
+
+let renamePath = null;
+function openRename(p){
+  renamePath = p;
+  const old = p.split('/').pop();
+  const elOld = document.getElementById('renameOld');
+  const elName = document.getElementById('renameName');
+  if(elOld) elOld.textContent = old;
+  if(elName) elName.value = old;
+  renameModal.classList.remove('hidden');
+}
+function closeRename(){
+  renamePath = null;
+  const elOld = document.getElementById('renameOld');
+  const elName = document.getElementById('renameName');
+  if(elOld) elOld.textContent = '';
+  if(elName) elName.value = '';
+  renameModal.classList.add('hidden');
+}
+function doRename(){
+  if(!renamePath) return;
+  const newName = (document.getElementById('renameName')||{}).value.trim();
+  if(!newName){ showToast('请输入新文件名','error'); return; }
+  if(newName.includes('/')){ showToast('文件名不能包含 /','error'); return; }
+  fetch('/rename', {
+    method: 'POST',
+    headers: { 'Accept': 'application/json', 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ path: renamePath, name: newName })
+  }).then(r=>r.json()).then(d=>{
+    closeRename();
+    if(d.ok){
+      showToast(`重命名成功：${d.name}`,'success');
+      setTimeout(()=>location.reload(),600);
+    }else{
+      showToast(`重命名失败：${d.error||'未知错误'}`,'error');
+    }
+  }).catch(()=>{ showToast('重命名失败：网络错误','error'); });
 }
 
 function showToast(msg, type='info'){
@@ -617,3 +670,25 @@ async def download_share_post(token: str, pw: str = Form(None)):
         if not pw or hash_pw(pw) != d.get("pw_hash"):
             return HTMLResponse("密码错误", status_code=403)
     return await download(d["path"])
+
+@app.post("/rename")
+async def rename_file(request: Request, path: str = Form(...), name: str = Form(...)):
+    if not is_login(request):
+        return JSONResponse({"ok": False, "error": "未登录"})
+    name = name.strip()
+    if not name or "/" in name:
+        return JSONResponse({"ok": False, "error": "无效的文件名"})
+    try:
+        src = safe_path(path)
+    except Exception:
+        return JSONResponse({"ok": False, "error": "非法路径"})
+    if not src.exists():
+        return JSONResponse({"ok": False, "error": "源不存在"})
+    dst = src.with_name(name)
+    if dst.exists():
+        return JSONResponse({"ok": False, "error": "目标已存在"})
+    try:
+        src.rename(dst)
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)})
+    return JSONResponse({"ok": True, "name": name})

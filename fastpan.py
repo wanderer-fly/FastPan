@@ -3,6 +3,8 @@ import io
 import time
 import zipfile
 import secrets
+import json
+import hashlib
 from pathlib import Path
 from datetime import datetime, timezone
 from fastapi import FastAPI, Request, UploadFile, File, Form
@@ -24,6 +26,9 @@ STORAGE.mkdir(exist_ok=True)
 TOKEN_TTL = 3600
 TOKENS = {}
 SHARES = {}
+
+SECRET_KEY = os.getenv("SECRET_KEY", "fastpan-secret")
+SHARE_FILE = STORAGE / "shares.json"
 
 app = FastAPI()
 
@@ -59,6 +64,34 @@ def zip_dir(path: Path):
                 z.write(f, f.relative_to(path))
     buf.seek(0)
     return buf
+
+def hash_pw(pw: str) -> str:
+    return hashlib.sha256((pw + SECRET_KEY).encode()).hexdigest()
+
+def load_shares():
+    global SHARES
+    if SHARE_FILE.exists():
+        try:
+            with open(SHARE_FILE, "r", encoding="utf-8") as f:
+                SHARES = json.load(f)
+        except Exception:
+            SHARES = {}
+    # 清理过期
+    now = time.time()
+    changed = False
+    for k in list(SHARES.keys()):
+        exp = SHARES[k].get("exp")
+        if exp and exp < now:
+            del SHARES[k]
+            changed = True
+    if changed:
+        save_shares()
+
+def save_shares():
+    tmp = SHARE_FILE.with_suffix(".tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(SHARES, f, ensure_ascii=False)
+    os.replace(tmp, SHARE_FILE)
 
 # ================== HTML ==================
 HTML = """<!doctype html>
@@ -174,23 +207,35 @@ tailwind.config = { darkMode:'class' }
 <!-- 分享 -->
 <div id="shareModal" class="fixed inset-0 hidden bg-black/30 backdrop-blur flex items-center justify-center">
 <div class="bg-white dark:bg-slate-800 p-6 rounded-xl w-80 relative">
-<button type="button" onclick="shareModal.classList.add('hidden')" class="absolute top-2 right-2 text-slate-400"><i class="bi bi-x-lg"></i></button>
-<div class="mb-2">
-<label class="text-sm text-slate-500 mr-2">有效期:</label>
-<div class="relative inline-block">
-  <select id="shareTTL" class="appearance-none pr-8 pl-3 py-2 rounded bg-slate-100 dark:bg-slate-700 border border-slate-200 dark:border-slate-600 text-sm cursor-pointer focus:outline-none focus:ring-2 focus:ring-blue-300">
-    <option value="0">永久</option>
-    <option value="3600">1 小时</option>
-    <option value="86400">1 天</option>
-    <option value="604800">7 天</option>
-    <option value="2592000">30 天</option>
-  </select>
-  <i class="bi bi-chevron-down absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none"></i>
-</div>
-</div>
-<input id="shareLink" class="w-full p-2 rounded bg-slate-100 dark:bg-slate-700">
-<div id="shareExpiry" class="text-xs text-slate-400 mt-2"></div>
-<button onclick="copy()" class="mt-3 w-full bg-blue-500 text-white py-2 rounded">复制</button>
+  <button type="button" onclick="shareModal.classList.add('hidden')" class="absolute top-2 right-2 text-slate-400"><i class="bi bi-x-lg"></i></button>
+  <input type="hidden" id="sharePath">
+  <div class="mb-2">
+    <label class="text-sm text-slate-500 mr-2">有效期:</label>
+    <div class="relative inline-block">
+      <select id="shareTTL" class="appearance-none pr-8 pl-3 py-2 rounded bg-slate-100 dark:bg-slate-700 border border-slate-200 dark:border-slate-600 text-sm cursor-pointer focus:outline-none focus:ring-2 focus:ring-blue-300">
+        <option value="0">永久</option>
+        <option value="3600">1 小时</option>
+        <option value="86400">1 天</option>
+        <option value="604800">7 天</option>
+        <option value="2592000">30 天</option>
+      </select>
+      <i class="bi bi-chevron-down absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none"></i>
+    </div>
+  </div>
+
+  <div class="mb-2">
+    <input id="sharePassword" type="password" placeholder="密码（可选）" class="w-full p-2 rounded bg-slate-100 dark:bg-slate-700">
+  </div>
+
+  <div class="mb-2">
+    <input id="shareLink" class="w-full p-2 rounded bg-slate-100 dark:bg-slate-700" readonly>
+    <div id="shareExpiry" class="text-xs text-slate-400 mt-2"></div>
+  </div>
+
+  <div class="flex gap-2">
+    <button type="button" onclick="createShare()" class="flex-1 py-2 rounded bg-blue-500 text-white">生成链接</button>
+    <button type="button" onclick="copy()" class="flex-1 py-2 rounded border">复制</button>
+  </div>
 </div>
 </div>
 
@@ -251,20 +296,37 @@ function mkdir(){
  .then(()=>location.reload())
 }
 function share(p){
+  // 打开分享弹窗并填充 path，让用户选择 TTL/密码后点击“生成链接”
+  const elPath = document.getElementById('sharePath');
+  const elLink = document.getElementById('shareLink');
+  const elExpiry = document.getElementById('shareExpiry');
+  const elPw = document.getElementById('sharePassword');
+  if(elPath) elPath.value = p;
+  if(elLink) elLink.value = '';
+  if(elExpiry) elExpiry.textContent = '';
+  if(elPw) elPw.value = '';
+  shareModal.classList.remove("hidden");
+}
+
+function createShare(){
+  const p = document.getElementById('sharePath').value;
   const ttl = document.getElementById('shareTTL') ? document.getElementById('shareTTL').value : 0;
-  fetch("/share/"+encodeURIComponent(p)+"?ttl="+ttl).then(r=>r.json()).then(d=>{
-    shareLink.value=d.url;
-    shareModal.classList.remove("hidden");
-    const expEl = document.getElementById('shareExpiry');
-    if(expEl){
-      if(d.expires_at){
-        const dt = new Date(d.expires_at);
-        expEl.textContent = `到期: ${dt.toLocaleString()}`;
-      } else {
-        expEl.textContent = '永久有效';
+  const pw = document.getElementById('sharePassword') ? document.getElementById('sharePassword').value : '';
+  if(!p) return;
+  fetch("/share/"+encodeURIComponent(p)+"?ttl="+encodeURIComponent(ttl)+"&pw="+encodeURIComponent(pw))
+    .then(r=>r.json())
+    .then(d=>{
+      shareLink.value = d.url;
+      const expEl = document.getElementById('shareExpiry');
+      if(expEl){
+        if(d.expires_at){
+          const dt = new Date(d.expires_at);
+          expEl.textContent = `到期: ${dt.toLocaleString()}`;
+        } else {
+          expEl.textContent = '永久有效';
+        }
       }
-    }
-  })
+    }).catch(()=>showToast('生成分享失败','error'));
 }
 
 function formatTTL(sec){
@@ -447,14 +509,18 @@ async def download(path: str):
     return FileResponse(p, filename=p.name)
 
 @app.get("/share/{path:path}")
-async def share(path: str, ttl: int = 0):
+async def share(path: str, ttl: int = 0, pw: str = ""):
     t=secrets.token_urlsafe(8)
     exp = None
     if ttl and ttl > 0:
-        exp = time.time() + ttl
-    SHARES[t]={"path":path,"exp":exp}
+        exp = time.time() + int(ttl)
+    entry = {"path":path,"exp":exp}
+    if pw:
+        entry["pw_hash"] = hash_pw(pw)
+    SHARES[t]=entry
+    save_shares()
     expires_at = datetime.fromtimestamp(exp, timezone.utc).isoformat() if exp else None
-    return JSONResponse({"url": f"{BASE_URL}/s/{t}", "expires_in": ttl if ttl > 0 else None, "expires_at": expires_at})
+    return JSONResponse({"url": f"{BASE_URL}/s/{t}", "expires_in": ttl if ttl and int(ttl) > 0 else None, "expires_at": expires_at})
 
 @app.get("/s/{token}")
 async def shared(token: str):
@@ -490,8 +556,30 @@ async def shared(token: str):
 """)
 
 @app.get("/download-share/{token}")
-async def download_share(token: str):
+async def download_share_get(token: str):
     d=SHARES.get(token)
     if not d: return HTMLResponse("链接已失效",404)
     if d.get("exp") and d["exp"]<time.time(): return HTMLResponse("链接已失效",404)
+    if d.get("pw_hash"):
+        # 返回一个简单的密码表单（POST 到同一路径）
+        return HTMLResponse(f"""<!doctype html>
+<html>
+<body>
+  <form method="post" action="/download-share/{token}">
+    <p>请输入密码：</p>
+    <input name="pw" type="password">
+    <button type="submit">下载</button>
+  </form>
+</body>
+</html>""")
+    return await download(d["path"])
+
+@app.post("/download-share/{token}")
+async def download_share_post(token: str, pw: str = Form(None)):
+    d=SHARES.get(token)
+    if not d: return HTMLResponse("链接已失效",404)
+    if d.get("exp") and d["exp"]<time.time(): return HTMLResponse("链接已失效",404)
+    if d.get("pw_hash"):
+        if not pw or hash_pw(pw) != d.get("pw_hash"):
+            return HTMLResponse("密码错误", status_code=403)
     return await download(d["path"])

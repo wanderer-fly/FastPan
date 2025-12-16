@@ -93,6 +93,26 @@ def save_shares():
         json.dump(SHARES, f, ensure_ascii=False)
     os.replace(tmp, SHARE_FILE)
 
+# 新增：获取 git 版本（优先环境变量，回退到 `git describe`，最后为 unknown）
+def get_git_version():
+    v = os.getenv("GIT_COMMIT") or os.getenv("GIT_VERSION")
+    if v:
+        return v
+    try:
+        import subprocess
+        out = subprocess.check_output(
+            ["git", "describe", "--tags", "--always", "--dirty"],
+            stderr=subprocess.DEVNULL
+        )
+        return out.decode().strip()
+    except Exception:
+        return "unknown"
+
+GIT_VERSION = get_git_version()
+
+# 启动时加载持久化的分享（如果存在）
+load_shares()
+
 # ================== HTML ==================
 HTML = """<!doctype html>
 <html class="h-full" x-data="{dark: localStorage.theme==='dark'}" :class="{'dark':dark}">
@@ -411,12 +431,18 @@ function showToast(msg, type='info'){
   }
 })();
 </script>
+
+<!-- 页脚：显示当前 Git 版本 -->
+<footer class="text-xs text-slate-400 mt-6 text-center">
+  Git: <span class="font-mono">{{ git_version }}</span>
+</footer>
 </div>
 </body>
 </html>
 """
 
 def render(**ctx):
+    ctx.setdefault("git_version", GIT_VERSION)
     return HTMLResponse(Template(HTML).render(**ctx))
 
 # ================== 路由 ==================

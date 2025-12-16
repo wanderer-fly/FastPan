@@ -89,7 +89,15 @@ tailwind.config = { darkMode:'class' }
 </header>
 
 <div class="text-sm text-slate-400 mb-2">
-路径：/{{ path }} ｜ 总大小：{{ total_size }}
+路径：
+<a href="/" class="text-blue-500 hover:underline">/</a>
+{% if path %}
+  {% for seg in path.split('/') %}
+    <span class="text-slate-400 mr-1"> </span>
+    <a href="/?path={{ '/'.join(path.split('/')[:loop.index]) }}" class="text-blue-500 hover:underline">{{ seg }}{% if not loop.last %}/{% endif %}</a>
+  {% endfor %}
+{% endif %}
+ ｜ 总大小：{{ total_size }}
 </div>
 
 {% if login %}
@@ -458,6 +466,8 @@ async def shared(token: str):
         exp_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(d["exp"]))
     else:
         exp_str = "永久有效"
+    parent = "/".join(d["path"].split("/")[:-1])
+    parent_link = f"{BASE_URL}/?path={quote(parent)}" if parent else f"{BASE_URL}/"
     return HTMLResponse(f"""<!doctype html>
 <html class="h-full">
 <head>
@@ -471,6 +481,7 @@ async def shared(token: str):
 <i class="bi bi-file-earmark text-4xl text-blue-500 block mb-3"></i>
 <h1 class="text-2xl font-bold mb-2">{p.name}</h1>
 <p class="text-slate-400 mb-2">有效期: {exp_str}</p>
+<p class="text-slate-500 mb-2">路径: <a href="{parent_link}" class="text-blue-500 hover:underline">/{parent if parent else ''}</a></p>
 <p class="text-slate-500 mb-6">文件大小: {human(dir_size(p))}</p>
 <a href="/download-share/{token}" class="inline-block px-6 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600"><i class="bi bi-download"></i> 下载</a>
 </div>

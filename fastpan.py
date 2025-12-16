@@ -4,6 +4,7 @@ import time
 import zipfile
 import secrets
 from pathlib import Path
+from datetime import datetime, timezone
 from fastapi import FastAPI, Request, UploadFile, File, Form
 from fastapi.responses import HTMLResponse, RedirectResponse, FileResponse, StreamingResponse, JSONResponse
 from dotenv import load_dotenv
@@ -166,7 +167,21 @@ tailwind.config = { darkMode:'class' }
 <div id="shareModal" class="fixed inset-0 hidden bg-black/30 backdrop-blur flex items-center justify-center">
 <div class="bg-white dark:bg-slate-800 p-6 rounded-xl w-80 relative">
 <button type="button" onclick="shareModal.classList.add('hidden')" class="absolute top-2 right-2 text-slate-400"><i class="bi bi-x-lg"></i></button>
+<div class="mb-2">
+<label class="text-sm text-slate-500 mr-2">有效期:</label>
+<div class="relative inline-block">
+  <select id="shareTTL" class="appearance-none pr-8 pl-3 py-2 rounded bg-slate-100 dark:bg-slate-700 border border-slate-200 dark:border-slate-600 text-sm cursor-pointer focus:outline-none focus:ring-2 focus:ring-blue-300">
+    <option value="0">永久</option>
+    <option value="3600">1 小时</option>
+    <option value="86400">1 天</option>
+    <option value="604800">7 天</option>
+    <option value="2592000">30 天</option>
+  </select>
+  <i class="bi bi-chevron-down absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none"></i>
+</div>
+</div>
 <input id="shareLink" class="w-full p-2 rounded bg-slate-100 dark:bg-slate-700">
+<div id="shareExpiry" class="text-xs text-slate-400 mt-2"></div>
 <button onclick="copy()" class="mt-3 w-full bg-blue-500 text-white py-2 rounded">复制</button>
 </div>
 </div>
@@ -228,11 +243,38 @@ function mkdir(){
  .then(()=>location.reload())
 }
 function share(p){
- fetch("/share/"+p).then(r=>r.json()).then(d=>{
-  shareLink.value=d.url;shareModal.classList.remove("hidden")
- })
+  const ttl = document.getElementById('shareTTL') ? document.getElementById('shareTTL').value : 0;
+  fetch("/share/"+encodeURIComponent(p)+"?ttl="+ttl).then(r=>r.json()).then(d=>{
+    shareLink.value=d.url;
+    shareModal.classList.remove("hidden");
+    const expEl = document.getElementById('shareExpiry');
+    if(expEl){
+      if(d.expires_at){
+        const dt = new Date(d.expires_at);
+        expEl.textContent = `到期: ${dt.toLocaleString()}`;
+      } else {
+        expEl.textContent = '永久有效';
+      }
+    }
+  })
 }
-function copy(){navigator.clipboard.writeText(shareLink.value)}
+
+function formatTTL(sec){
+  sec = Number(sec) || 0;
+  if(sec<=0) return '永久';
+  const days = Math.floor(sec/86400);
+  if(days>=1) return `${days} 天`;
+  const hours = Math.floor(sec/3600);
+  if(hours>=1) return `${hours} 小时`;
+  const mins = Math.floor(sec/60);
+  if(mins>=1) return `${mins} 分钟`;
+  return `${sec} 秒`;
+}
+function copy(){
+  const el = document.getElementById('shareLink');
+  if(!el || !el.value){ showToast('请先生成分享链接','error'); return; }
+  navigator.clipboard.writeText(el.value).then(()=>showToast('已复制到剪贴板','success')).catch(()=>showToast('复制失败','error'))
+}
 function toggleDark(){
  document.documentElement.classList.toggle("dark");
  localStorage.theme=document.documentElement.classList.contains("dark")?"dark":"light";
@@ -397,16 +439,25 @@ async def download(path: str):
     return FileResponse(p, filename=p.name)
 
 @app.get("/share/{path:path}")
-async def share(path: str):
+async def share(path: str, ttl: int = 0):
     t=secrets.token_urlsafe(8)
-    SHARES[t]={"path":path,"exp":time.time()+3600}
-    return JSONResponse({"url": f"{BASE_URL}/s/{t}"})
+    exp = None
+    if ttl and ttl > 0:
+        exp = time.time() + ttl
+    SHARES[t]={"path":path,"exp":exp}
+    expires_at = datetime.fromtimestamp(exp, timezone.utc).isoformat() if exp else None
+    return JSONResponse({"url": f"{BASE_URL}/s/{t}", "expires_in": ttl if ttl > 0 else None, "expires_at": expires_at})
 
 @app.get("/s/{token}")
 async def shared(token: str):
     d=SHARES.get(token)
-    if not d or d["exp"]<time.time(): return HTMLResponse("链接已失效",404)
+    if not d: return HTMLResponse("链接已失效",404)
+    if d.get("exp") and d["exp"]<time.time(): return HTMLResponse("链接已失效",404)
     p=safe_path(d["path"])
+    if d.get("exp"):
+        exp_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(d["exp"]))
+    else:
+        exp_str = "永久有效"
     return HTMLResponse(f"""<!doctype html>
 <html class="h-full">
 <head>
@@ -419,6 +470,7 @@ async def shared(token: str):
 <div class="bg-white p-8 rounded-xl text-center">
 <i class="bi bi-file-earmark text-4xl text-blue-500 block mb-3"></i>
 <h1 class="text-2xl font-bold mb-2">{p.name}</h1>
+<p class="text-slate-400 mb-2">有效期: {exp_str}</p>
 <p class="text-slate-500 mb-6">文件大小: {human(dir_size(p))}</p>
 <a href="/download-share/{token}" class="inline-block px-6 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600"><i class="bi bi-download"></i> 下载</a>
 </div>
@@ -429,5 +481,6 @@ async def shared(token: str):
 @app.get("/download-share/{token}")
 async def download_share(token: str):
     d=SHARES.get(token)
-    if not d or d["exp"]<time.time(): return HTMLResponse("链接已失效",404)
+    if not d: return HTMLResponse("链接已失效",404)
+    if d.get("exp") and d["exp"]<time.time(): return HTMLResponse("链接已失效",404)
     return await download(d["path"])

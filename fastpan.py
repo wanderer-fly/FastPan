@@ -8,6 +8,7 @@ from fastapi import FastAPI, Request, UploadFile, File, Form
 from fastapi.responses import HTMLResponse, RedirectResponse, FileResponse, StreamingResponse, JSONResponse
 from dotenv import load_dotenv
 from jinja2 import Template
+from urllib.parse import quote
 
 # ================== 配置 ==================
 load_dotenv()
@@ -129,7 +130,7 @@ tailwind.config = { darkMode:'class' }
 <a href="javascript:share('{{ i.full }}')"><i class="bi bi-link-45deg"></i></a>
 {% endif %}
 {% if login %}
-<a href="/delete/{{ i.full }}"><i class="bi bi-trash"></i></a>
+<a href="#" data-path="{{ i.full }}" onclick="openDelete(this.dataset.path);return false;"><i class="bi bi-trash"></i></a>
 {% endif %}
 </div>
 </div>
@@ -140,8 +141,10 @@ tailwind.config = { darkMode:'class' }
 <div id="loginModal" class="fixed inset-0 hidden bg-black/30 backdrop-blur flex items-center justify-center">
 <form method="post" action="/login"
  class="bg-white dark:bg-slate-800 p-6 rounded-xl w-72 relative">
-<button type="button" onclick="loginModal.classList.add('hidden')" class="absolute top-2 right-2 text-slate-400"><i class="bi bi-x-lg"></i></button>
+<button type="button" onclick="closeLogin()" class="absolute top-2 right-2 text-slate-400"><i class="bi bi-x-lg"></i></button>
 <h2 class="text-lg font-bold mb-3">登录</h2>
+<!-- 显示登录错误 -->
+<div id="loginError" class="text-sm text-red-500 mb-2 hidden"></div>
 <input name="username" placeholder="用户名" class="w-full mb-2 p-2 rounded bg-slate-100 dark:bg-slate-700">
 <input name="password" type="password" placeholder="密码"
  class="w-full mb-4 p-2 rounded bg-slate-100 dark:bg-slate-700">
@@ -168,6 +171,22 @@ tailwind.config = { darkMode:'class' }
 </div>
 </div>
 
+<!-- 删除确认 -->
+<div id="deleteModal" class="fixed inset-0 hidden bg-black/30 backdrop-blur flex items-center justify-center">
+  <div class="bg-white dark:bg-slate-800 p-6 rounded-xl w-80 relative">
+    <button type="button" onclick="closeDelete()" class="absolute top-2 right-2 text-slate-400"><i class="bi bi-x-lg"></i></button>
+    <h3 class="text-lg font-bold mb-2">确认删除</h3>
+    <p class="mb-3 text-slate-500">确认删除 <span id="delName" class="font-medium"></span> 吗？此操作不可恢复。</p>
+    <div class="flex gap-2">
+      <button onclick="closeDelete()" class="flex-1 py-2 rounded border">取消</button>
+      <button onclick="doDelete()" class="flex-1 py-2 rounded bg-red-500 text-white">删除</button>
+    </div>
+  </div>
+</div>
+
+<!-- Toast 容器 -->
+<div id="toasts" class="fixed top-4 right-4 space-y-2 z-50"></div>
+
 <script>
 let file=null;
 dropZone.onclick=()=>fileInput.click();
@@ -193,7 +212,16 @@ function upload(){
  x.send(f);
 }
 
-function openLogin(){loginModal.classList.remove("hidden")}
+function openLogin(){ 
+  const el = document.getElementById('loginError');
+  if(el){ el.classList.add('hidden'); el.textContent=''; }
+  loginModal.classList.remove("hidden")
+}
+function closeLogin(){
+  const el = document.getElementById('loginError');
+  if(el){ el.classList.add('hidden'); el.textContent=''; }
+  loginModal.classList.add('hidden')
+}
 function openMkdir(){mkdirModal.classList.remove("hidden")}
 function mkdir(){
  fetch("/mkdir?path={{ path }}&name="+mkdirName.value,{method:"POST"})
@@ -209,6 +237,67 @@ function toggleDark(){
  document.documentElement.classList.toggle("dark");
  localStorage.theme=document.documentElement.classList.contains("dark")?"dark":"light";
 }
+
+let deletePath=null;
+function openDelete(p){
+  deletePath=p;
+  delName.textContent=p;
+  deleteModal.classList.remove("hidden");
+}
+function closeDelete(){
+  deletePath=null;
+  deleteModal.classList.add("hidden");
+}
+function doDelete(){
+  if(!deletePath) return;
+  fetch("/delete/"+encodeURIComponent(deletePath), { headers: { 'Accept': 'application/json' } })
+    .then(r=>r.json())
+    .then(d=>{
+      closeDelete();
+      if(d.ok){
+        showToast(`删除成功：${d.name}`,'success');
+        setTimeout(()=>location.reload(),800);
+      }else{
+        showToast(`删除失败：${d.error||'未知错误'}`,'error');
+      }
+    }).catch(()=>showToast('删除失败：网络错误','error'));
+}
+
+function showToast(msg, type='info'){
+  const container = document.getElementById('toasts');
+  if(!container) return;
+  const el = document.createElement('div');
+  const color = type==='success' ? 'bg-green-500' : type==='error' ? 'bg-red-500' : 'bg-blue-500';
+  el.className = `text-white px-4 py-2 rounded shadow ${color} opacity-0 transform translate-y-2 transition-all duration-300`;
+  el.textContent = msg;
+  container.appendChild(el);
+  requestAnimationFrame(()=>{ el.classList.remove('opacity-0'); el.classList.remove('translate-y-2'); el.classList.add('opacity-100'); });
+  setTimeout(()=>{
+    el.classList.add('opacity-0');
+    el.addEventListener('transitionend', ()=>el.remove(), {once:true});
+  }, 3000);
+}
+
+// 页面加载时检查 URL 参数显示提示
+(function(){
+  const params = new URLSearchParams(location.search);
+  const m = params.get('msg');
+  if(m){
+    if(m==='login_failed'){
+      openLogin();
+      const el = document.getElementById('loginError');
+      if(el){ el.textContent='登录失败：用户名或密码错误'; el.classList.remove('hidden'); }
+    }
+    else if(m==='deleted'){
+      const name = params.get('name');
+      showToast(name ? `删除成功：${name}` : '删除成功','success');
+    }else if(m==='delete_failed'){
+      const name = params.get('name');
+      showToast(name ? `删除失败：${name}` : '删除失败','error');
+    }
+    history.replaceState(null, '', location.pathname);
+  }
+})();
 </script>
 </div>
 </body>
@@ -222,7 +311,11 @@ def render(**ctx):
 @app.get("/")
 async def index(request: Request, path: str = ""):
     p = safe_path(path)
-    p.mkdir(exist_ok=True)
+    # 不再对未登录用户自动创建目录
+    if not p.exists():
+        if not is_login(request):
+            return HTMLResponse("目录不存在", status_code=404)
+        p.mkdir(parents=True, exist_ok=True)
     items=[]
     for f in sorted(p.iterdir()):
         items.append({
@@ -248,8 +341,8 @@ async def login(username: str = Form(...), password: str = Form(...)):
         r=RedirectResponse("/",302)
         r.set_cookie("token",t,httponly=True)
         return r
-    return RedirectResponse("/",302)
-
+    return RedirectResponse("/?msg=login_failed",302)
+    
 @app.get("/logout")
 async def logout():
     r=RedirectResponse("/",302)
@@ -272,14 +365,27 @@ async def mkdir(request: Request, path: str="", name: str=""):
 
 @app.get("/delete/{path:path}")
 async def delete(request: Request, path: str):
-    if is_login(request):
-        p=safe_path(path)
-        if p.is_file(): p.unlink()
+    if not is_login(request):
+        if 'application/json' in request.headers.get('accept',''):
+            return JSONResponse({"ok": False, "error": "未登录"})
+        return RedirectResponse("/?msg=delete_failed",302)
+
+    p = safe_path(path)
+    try:
+        if p.is_file():
+            p.unlink()
         else:
             for f in p.rglob("*"):
                 if f.is_file(): f.unlink()
             p.rmdir()
-    return RedirectResponse("/",302)
+    except Exception as e:
+        if 'application/json' in request.headers.get('accept',''):
+            return JSONResponse({"ok": False, "error": str(e)})
+        return RedirectResponse(f"/?msg=delete_failed&name={quote(p.name)}",302)
+
+    if 'application/json' in request.headers.get('accept',''):
+        return JSONResponse({"ok": True, "name": p.name})
+    return RedirectResponse(f"/?msg=deleted&name={quote(p.name)}",302)
 
 @app.get("/download/{path:path}")
 async def download(path: str):

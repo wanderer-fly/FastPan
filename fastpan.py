@@ -253,7 +253,7 @@ tailwind.config = { darkMode:'class' }
   </div>
 
   <div class="mb-2">
-    <input id="sharePassword" type="password" placeholder="密码（可选）" class="w-full p-2 rounded bg-slate-100 dark:bg-slate-700">
+    <input id="sharePassword" type="password" placeholder="密码（可选，没什么用，打开主页就能下载了）" class="w-full p-2 rounded bg-slate-100 dark:bg-slate-700">
   </div>
 
   <div class="mb-2">
